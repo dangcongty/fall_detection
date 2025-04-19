@@ -1,0 +1,11 @@
+datasets/
+checkpoints/
+logs/
+*.avi
+*.jpg
+*.png
+*.mp4
+*.json
+*.zip
+weights/    
+paper_assets/
