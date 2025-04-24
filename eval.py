@@ -44,7 +44,7 @@ def validate(model: Model, val_loader, criterion, device):
         
     metrics.pred = stored_preds
     metrics.gt = stored_gts
-    precision, recall, f1 = metrics()
+    precision, recall, f1, specificity, acc, auc = metrics()
 
     return np.mean(running_loss), precision, recall, f1
 
@@ -68,12 +68,12 @@ def main():
         edge_importance_weighting=False,
         dropout=0.5).to(device)
     
-    model.load_state_dict(torch.load('checkpoints/le2i/model_epoch_891_recall.pth')['model']) # urfall
+    model.load_state_dict(torch.load('checkpoints/urfall/model_epoch_945_f1.pth')['model']) # urfall
 
     criterion = Loss(device=device).to(device)
 
     # Data loaders
-    val_dataset = FallDataset(data_path='datasets/ur_fall/all.txt')
+    val_dataset = FallDataset(data_path='datasets/ur_fall/test.txt', transform=False)
     val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False)
 
 

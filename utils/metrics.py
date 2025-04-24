@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from sklearn.metrics import roc_auc_score
 
 
 def IoU(pred, gt):
@@ -47,19 +48,30 @@ class Metrics(object):
         recalls = []
         precisions = []
         f1s = []
+        acc = []
+        specs = []
         gt = self.gt.bool()
         for th in self.thresholds:
             pred = self.pred > th
             self.TP = (pred & gt).sum().float()
+            self.TN = (~pred & ~gt).sum().float()
             self.FP = (pred & ~gt).sum().float()
             self.FN = (~pred & gt).sum().float()
             
             recall = self.TP/(self.TP + self.FN + 1e-8)
             precision = self.TP/(self.TP + self.FP + 1e-8)
+            specificity = self.TN/(self.TN + self.FP + 1e-8)
             f1 = 2 * precision * recall / (precision + recall + 1e-8)
-            
+            accuracy = (self.TP + self.TN) / (self.TP + self.TN + self.FP + self.FN + 1e-8)  # +1e-8 to avoid division by zero
+
             recalls.append(recall)
             precisions.append(precision)
             f1s.append(f1)
+            acc.append(accuracy)
+            specs.append(specificity)
 
-        return precisions, recalls, f1s
+        auc = roc_auc_score(gt.cpu().numpy(), self.pred.cpu().numpy())
+
+
+
+        return precisions, recalls, f1s, specs, acc, auc

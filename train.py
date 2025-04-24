@@ -40,7 +40,7 @@ def train(model: Model, train_loader, criterion, optimizer, device, writer: Summ
     return np.mean(running_loss)
 
 
-def validate(model: Model, val_loader, criterion, device, writer: SummaryWriter, epoch):
+def validate(model: Model, val_loader, criterion:Loss, device, writer: SummaryWriter, epoch):
     model.eval()
     running_loss = []
     running_trans_loss = []

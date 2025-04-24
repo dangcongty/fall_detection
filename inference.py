@@ -118,11 +118,11 @@ class Inference:
 
 
 before_gpu = get_gpu_memory()
-inferencer = Inference(model_path='checkpoints/ver37/model_epoch_466_f1.pth',
+inferencer = Inference(model_path='checkpoints/urfall/model_epoch_945_f1.pth',
                        device='cuda:1',
                        sequence_length=32,
                        threshold=0.2)
-inferencer(video_path='datasets/ur_fall/dataset/fall-03-cam0.mp4')
+inferencer(video_path='datasets/ur_fall/dataset/adl-10-cam0.mp4')
 
 after_gpu = get_gpu_memory()
 print(f"[MEMORY] used {after_gpu - before_gpu:.2f} MB")
