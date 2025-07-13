@@ -51,8 +51,9 @@ class Metrics(object):
         acc = []
         specs = []
         gt = self.gt.bool()
+        pred_sigmoid = torch.sigmoid(self.pred)
         for th in self.thresholds:
-            pred = self.pred > th
+            pred = pred_sigmoid > th
             self.TP = (pred & gt).sum().float()
             self.TN = (~pred & ~gt).sum().float()
             self.FP = (pred & ~gt).sum().float()
@@ -70,8 +71,10 @@ class Metrics(object):
             acc.append(accuracy)
             specs.append(specificity)
 
-        auc = roc_auc_score(gt.cpu().numpy(), self.pred.cpu().numpy())
-
+        try:
+            auc = roc_auc_score(gt.cpu().numpy(), pred.cpu().numpy())
+        except ValueError:
+            auc = 0
 
 
         return precisions, recalls, f1s, specs, acc, auc

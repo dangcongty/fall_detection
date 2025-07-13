@@ -74,8 +74,7 @@ if __name__ == "__main__":
 
     extractor = SkeletonExtractor(model_path=model_path)
     if dataset == 'le2i':
-        for video_path in tqdm(glob('datasets/le2i/data/*/*')):
-            img_paths = sorted(glob(f'{video_path}/images/*.jpg'), key=lambda x: int(x.split('/')[-1].split('_')[0]))
-            for z, img_path in enumerate(tqdm(img_paths)):
-                extractor.extract_skeleton(img_path, z)
-            break
+        video_path = "/media/ssd220/ty/fall_detection_data/le2i/data/Coffee_room_01/video (2)"
+        img_paths = sorted(glob(f'{video_path}/images/*.jpg'), key=lambda x: int(x.split('/')[-1].split('_')[0]))
+        for z, img_path in enumerate(tqdm(img_paths)):
+            extractor.extract_skeleton(img_path, z)

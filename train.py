@@ -20,23 +20,29 @@ def train(model: Model, train_loader, criterion, optimizer, device, writer: Summ
     running_loss = []
     running_trans_loss = []
     running_mse_loss = []
-    for i, (inputs, labels, paths) in tqdm(enumerate(train_loader), total=len(train_loader)):
-        inputs, labels = inputs.to(device), labels.to(device)
+    running_cons_loss = []
+    running_bce_loss = []
+    for i, (inputs, labels, paths, ct_label) in tqdm(enumerate(train_loader), total=len(train_loader)):
+        inputs, labels, ct_label = inputs.to(device), labels.to(device), ct_label.to(device)
 
         optimizer.zero_grad()
-        outputs = model(inputs.unsqueeze(-1))
+        outputs, latents, out_binary = model(inputs.unsqueeze(-1))
         outputs = outputs.view(outputs.shape[0], outputs.shape[2])
-        losses, mse_loss, trans_loss = criterion(outputs, labels)
+        losses, [mse_loss, trans_loss, cons_loss, bce_loss] = criterion(outputs, labels, latents, ct_label, out_binary)
         losses.backward()
         optimizer.step()
 
         running_loss.append(losses.item())
         running_trans_loss.append(trans_loss.item())
         running_mse_loss.append(mse_loss.item())
+        running_cons_loss.append(cons_loss.item())
+        running_bce_loss.append(bce_loss.item())
 
     writer.add_scalar('Train/Loss', np.mean(running_loss), global_step=epoch)
     writer.add_scalar('Train/Trans', np.mean(running_trans_loss), global_step=epoch)
     writer.add_scalar('Train/MSE', np.mean(running_mse_loss), global_step=epoch)
+    writer.add_scalar('Train/Cons', np.mean(running_cons_loss), global_step=epoch)
+    writer.add_scalar('Train/BCE', np.mean(running_bce_loss), global_step=epoch)
     return np.mean(running_loss)
 
 
@@ -48,15 +54,14 @@ def validate(model: Model, val_loader, criterion:Loss, device, writer: SummaryWr
     stored_preds = None
     stored_gts = None
     metrics = Metrics(thresholds = [0.5, 0.8, 0.9])
-    for i, (inputs, labels, paths) in tqdm(enumerate(val_loader), total=len(val_loader)):
-        inputs, labels = inputs.to(device), labels.to(device)
+    for i, (inputs, labels, paths, ct_label) in tqdm(enumerate(val_loader), total=len(val_loader)):
+        inputs, labels, ct_label = inputs.to(device), labels.to(device), ct_label.to(device)
 
         with torch.no_grad():
-            outputs = model(inputs.unsqueeze(-1))
+            outputs, latents, out_binary = model(inputs.unsqueeze(-1))
         outputs = outputs.view(outputs.shape[0], outputs.shape[2])
 
-        losses, mse_loss, trans_loss = criterion(outputs, labels)
-
+        losses, _ = criterion(outputs, labels, latents, ct_label, out_binary)
 
         if stored_preds is not None:
             stored_preds = torch.concat([stored_preds, outputs], dim=0)
@@ -69,18 +74,20 @@ def validate(model: Model, val_loader, criterion:Loss, device, writer: SummaryWr
         
     metrics.pred = stored_preds
     metrics.gt = stored_gts
-    precision, recall, f1 = metrics()
+    precisions, recalls, f1s, specs, acc, auc = metrics()
 
     writer.add_scalar('Validation/Loss', np.mean(running_loss), epoch)
 
     for k, th in enumerate([0.5, 0.8, 0.9]):
-        writer.add_scalar(f'Validation/precision_{th}', precision[k], epoch)
-        writer.add_scalar(f'Validation/recall_{th}', recall[k], epoch)
-        writer.add_scalar(f'Validation/f1_{th}', f1[k], epoch)
+        writer.add_scalar(f'Validation/precision_{th}', precisions[k], epoch)
+        writer.add_scalar(f'Validation/recall_{th}', recalls[k], epoch)
+        writer.add_scalar(f'Validation/f1_{th}', f1s[k], epoch)
 
-    return np.mean(running_loss), precision[-1], recall[-1], f1[-1]
+    return np.mean(running_loss), precisions[-1], recalls[-1], f1s[-1]
 
-def main():
+
+
+def main(version):
     import shutil
 
     # Set device
@@ -93,33 +100,33 @@ def main():
     torch.cuda.manual_seed_all(42)
 
     # logger
-    version = len(os.listdir('logs')) +1
-    writer = SummaryWriter(log_dir=f'logs/ver{version}')
-    os.makedirs(f'checkpoints/ver{version}')
+    # version = len(os.listdir('logs')) +1
+    writer = SummaryWriter(log_dir=f'logs/{version}')
+    os.makedirs(f'./checkpoints/{version}', exist_ok=True)
 
-    shutil.copy('train.py', f'checkpoints/ver{version}/train.py')
-    shutil.copytree('models', f'checkpoints/ver{version}/models')
-    shutil.copytree('data', f'checkpoints/ver{version}/data')
-    shutil.copytree('utils', f'checkpoints/ver{version}/utils')
+    shutil.copy('train.py', f'./checkpoints/{version}/train.py')
+    shutil.copytree('models', f'./checkpoints/{version}/models', dirs_exist_ok = True)
+    shutil.copytree('data', f'./checkpoints/{version}/data', dirs_exist_ok = True)
+    shutil.copytree('utils', f'./checkpoints/{version}/utils', dirs_exist_ok = True)
 
     # Model, loss function, optimizer
     model = Model(
         in_channels=2,
         num_class=1,
         graph_args=dict(layout='coco', strategy='spatial', max_hop=1),
-        edge_importance_weighting=False,
+        edge_importance_weighting=True,
         dropout=0.5).to(device)
-    # model.load_state_dict(torch.load('checkpoints/ver32/model_epoch_891_recall.pth')['model'])
+    # model.load_state_dict(torch.load('checkpoints/urfall/model_epoch_724_f1.pth')['model'])
 
-    criterion = Loss(device=device).to(device)
+    criterion = Loss(device=device, use_contrastive = True).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     # Data loaders
     train_dataset = FallDataset(data_path='datasets/ur_fall/train.txt')
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, pin_memory=True, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, pin_memory=True, drop_last=True)
 
-    val_dataset = FallDataset(data_path='datasets/ur_fall/test.txt')
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    val_dataset = FallDataset(data_path='datasets/ur_fall/train.txt', transform=False)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 
     # Training loop
     num_epochs = 1000
@@ -141,7 +148,7 @@ def main():
                         'f1': f1,
                         'loss': val_loss,
                         }, 
-                        f'checkpoints/ver{version}/model_epoch_{epoch+1}_precision.pth')
+                        f'./checkpoints/{version}/model_epoch_{epoch+1}_precision.pth')
             print(f"Model checkpoint saved at epoch {epoch+1}")
 
         if r > best_r:
@@ -152,7 +159,7 @@ def main():
                         'f1': f1,
                         'loss': val_loss,
                         }, 
-                        f'checkpoints/ver{version}/model_epoch_{epoch+1}_recall.pth')
+                        f'./checkpoints/{version}/model_epoch_{epoch+1}_recall.pth')
             print(f"Model checkpoint saved at epoch {epoch+1}")
             
             
@@ -164,7 +171,7 @@ def main():
                         'f1': f1,
                         'loss': val_loss,
                         }, 
-                        f'checkpoints/ver{version}/model_epoch_{epoch+1}_f1.pth')
+                        f'./checkpoints/{version}/model_epoch_{epoch+1}_f1.pth')
             print(f"Model checkpoint saved at epoch {epoch+1}")
 
 
@@ -172,5 +179,6 @@ def main():
 
 
 if __name__ == "__main__":
+    version = input('version: ')
 
-    main()
+    main(version)

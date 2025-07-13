@@ -284,7 +284,7 @@ class st_gcn(nn.Module):
 
         self.tcn = nn.Sequential(
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
+            nn.Mish(inplace=True),
             nn.Conv2d(
                 out_channels,
                 out_channels,
@@ -312,7 +312,7 @@ class st_gcn(nn.Module):
                 nn.BatchNorm2d(out_channels),
             )
 
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.Mish(inplace=True)
 
     def forward(self, x, A):
 
@@ -321,6 +321,127 @@ class st_gcn(nn.Module):
         x = self.tcn(x) + res
 
         return self.relu(x), A
+
+
+
+class Flatten(nn.Module):
+    def forward(self, x):
+        return x.view(x.size(0), -1)
+
+class CAM(nn.Module):
+    '''
+    Channel Attention Module
+    '''
+    def __init__(self, in_chan, reduction_ratio=16, pool_types = ['max', 'avg']):
+        super(CAM, self).__init__()
+        self.mlp = nn.Sequential(
+            Flatten(),
+            nn.Linear(in_chan, in_chan // reduction_ratio),
+            nn.Mish(),
+            nn.Linear(in_chan // reduction_ratio, in_chan)
+            )
+        self.pool_types = pool_types
+
+    def forward(self, x):
+        channel_att_sum = None
+        for pool_type in self.pool_types:
+            if pool_type=='avg':
+                avg_pool = F.avg_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+                channel_att_raw = self.mlp( avg_pool )
+            elif pool_type=='max':
+                max_pool = F.max_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+                channel_att_raw = self.mlp( max_pool )
+            elif pool_type=='lp':
+                lp_pool = F.lp_pool2d( x, 2, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+                channel_att_raw = self.mlp( lp_pool )
+
+            if channel_att_sum is None:
+                channel_att_sum = channel_att_raw
+            else:
+                channel_att_sum = channel_att_sum + channel_att_raw
+
+        scale = F.sigmoid( channel_att_sum ).unsqueeze(2).unsqueeze(3).expand_as(x)
+        return x * scale
+
+
+class ChannelPool(nn.Module):
+    def forward(self, x):
+        return torch.cat( (torch.max(x,1)[0].unsqueeze(1), torch.mean(x,1).unsqueeze(1)), dim=1 )
+
+class BasicConv(nn.Module):
+    def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False):
+        super(BasicConv, self).__init__()
+        self.out_channels = out_planes
+        self.conv = nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
+        self.bn = nn.BatchNorm2d(out_planes,eps=1e-5, momentum=0.01, affine=True) if bn else None
+        self.relu = nn.Mish() if relu else None
+
+    def forward(self, x):
+        x = self.conv(x)
+        if self.bn is not None:
+            x = self.bn(x)
+        if self.relu is not None:
+            x = self.relu(x)
+        return x
+
+class SAM(nn.Module):
+    '''
+    Spatial Attention Module
+    '''
+    def __init__(self):
+        super(SAM, self).__init__()
+        kernel_size = 7
+        self.compress = ChannelPool()
+        self.spatial = BasicConv(2, 1, kernel_size, stride=1, padding=(kernel_size-1) // 2, relu=False)
+    def forward(self, x):
+        x_compress = self.compress(x)
+        x_out = self.spatial(x_compress)
+        scale = F.sigmoid(x_out) # broadcasting
+        return x * scale
+
+
+class CBAM(nn.Module):
+    def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max'], no_spatial=False):
+        super(CBAM, self).__init__()
+        self.ChannelGate = CAM(gate_channels, reduction_ratio, pool_types)
+        self.no_spatial=no_spatial
+        if not no_spatial:
+            self.SpatialGate = SAM()
+    def forward(self, x):
+        x_out = self.ChannelGate(x)
+        if not self.no_spatial:
+            x_out = self.SpatialGate(x_out)
+        return x_out
+
+
+class Contrastive(nn.Module):
+    def __init__(self, in_chan, latent_dim, size):
+        '''
+            size: B x C x H x W
+        '''
+        super().__init__()
+        C, H, W = size
+        self.cbam = nn.Sequential(
+            CBAM(in_chan),
+            CBAM(in_chan),
+            CBAM(in_chan),
+            CBAM(in_chan),
+            CBAM(in_chan),
+        )
+        self.latent = nn.Linear(C*H*W, latent_dim)
+        self.out_layer = nn.Sequential(
+            nn.BatchNorm1d(latent_dim),
+            nn.Mish(inplace=True),
+            nn.Linear(latent_dim, C)
+        )
+        self.latent_dim = latent_dim
+
+    def forward(self, x):
+        B, C, H, W = x.size()
+        cbam = self.cbam(x)
+        latent = self.latent(cbam.flatten(1))
+        out = self.out_layer(latent)
+        return out.reshape((B, C, 1, 1)), latent
 
 
 
@@ -384,20 +505,44 @@ class Model(nn.Module):
 
         # pooling 
         self.pool = nn.Conv2d(256, 256, (1, 17), 1, 0)
+        
+        # contrastive module
+        latent_dim = 512
+        self.contrastive_1 = Contrastive(256, latent_dim, (256, 8, 1))
+        self.contrastive_2 = Contrastive(128, latent_dim, (128, 16, 1))
 
         # up
-        self.upscale = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, (4, 1), (2, 1), (1, 0)),
+        self.decoder_1 = nn.Sequential(
+            nn.Upsample(scale_factor=(2, 1)),
+            nn.Conv2d(256, 128, 1, 1, 0),
             nn.BatchNorm2d(128),
-            nn.LeakyReLU(inplace=True),
-            nn.ConvTranspose2d(128, 64, (4, 1), (2, 1), (1, 0)),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(inplace=True),
-            nn.ConvTranspose2d(64, 64, (1, 1), (1, 1), (0, 0)),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(inplace=True),
-            nn.Conv2d(64, 1, (1, 1), (1, 1), (0, 0)),
+            nn.Mish(inplace=True),
         )
+        self.decoder_2 = nn.Sequential(
+            nn.Upsample(scale_factor=(2, 1)),
+            nn.Conv2d(128, 64, 1, 1, 0),
+            nn.BatchNorm2d(64),
+            nn.Mish(inplace=True),
+        
+            nn.Conv2d(64, 64, 1, 1, 0),
+            nn.BatchNorm2d(64),
+            nn.Mish(inplace=True),
+        )
+
+        
+        self.output = nn.Conv2d(64, 1, (1, 1), (1, 1), (0, 0))
+
+        self.combine_layer = nn.Sequential(
+            nn.AdaptiveAvgPool2d((8, 1)),
+            nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(256),
+            nn.Mish(inplace=True)
+        )
+
+        self.combine_type = 'sum'
+
+        self.classifier_1 = ClassifierHead(512)
+        self.classifier_2 = ClassifierHead(512)
 
     def forward(self, x):
 
@@ -415,12 +560,40 @@ class Model(nn.Module):
             x, _ = gcn(x, self.A * importance)
 
         # global pooling
-        x = self.pool(x)
+        pool = self.pool(x)
+
+        # get latent 
+        feat_1, latent_1 = self.contrastive_1(pool)
+        combine_feat_1 = feat_1 + pool
 
         # prediction
-        x = self.upscale(x)
+        dec_1 = self.decoder_1(combine_feat_1)
+        feat_2, latent_2 = self.contrastive_2(dec_1)
+        combine_feat_2 = feat_2 + dec_1
 
-        return x
+        dec_2 = self.decoder_2(combine_feat_2)
+
+        out = self.output(dec_2)
+
+        cls_1 = self.classifier_1(latent_1)
+        cls_2 = self.classifier_1(latent_2)
+
+        return out, [latent_1, latent_2], [cls_1, cls_2]
+
+
+class ClassifierHead(nn.Module):
+    def __init__(self, in_chan):
+        super().__init__()
+
+        self.layer = nn.Sequential(
+            nn.BatchNorm1d(in_chan),
+            nn.Mish(inplace=True),
+            nn.Linear(in_chan, 1),
+            nn.Sigmoid()
+        )
+    def forward(self, x):
+
+        return self.layer(x)
 
 if __name__ == "__main__":
     model = Model(
@@ -436,6 +609,6 @@ if __name__ == "__main__":
         :math:`V_{in}` is the number of graph nodes,
         :math:`M_{in}` is the number of instance in a frame.
     '''
-    x = torch.randn(2, 2, 64, 17, 1)
-    output = model(x)
-    print(output.shape)
+    x = torch.randn(2, 2, 32, 17, 1)
+    out, feat = model(x)
+    print(out.shape)
