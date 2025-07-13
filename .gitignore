@@ -9,3 +9,5 @@ logs/
 *.zip
 weights/    
 paper_assets/
+
+*.pt
