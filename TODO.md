@@ -1,1 +1,0 @@
-1. Sử dụng CFDD -> tracking skeleton => train từng sequence

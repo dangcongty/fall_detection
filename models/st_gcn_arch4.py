@@ -491,6 +491,7 @@ class Model(nn.Module):
             st_gcn(128, 256, kernel_size, 2, **kwargs),
             st_gcn(256, 256, kernel_size, 1, **kwargs),
             st_gcn(256, 256, kernel_size, 1, **kwargs),
+            # st_gcn(256, 512, kernel_size, 2, **kwargs),
         ))
 
         # initialize parameters for edge importance weighting
@@ -503,55 +504,50 @@ class Model(nn.Module):
             self.edge_importance = [1] * len(self.st_gcn_networks)
 
 
-        # pooling 
-        self.pool = nn.Conv2d(256, 256, (1, 17), 1, 0)
-        
-        # contrastive module
-        self.use_ct = use_ct
-        if self.use_ct:
-            latent_dim = 512
-            self.contrastive_1 = Contrastive(256, latent_dim, (256, 8, 1))
-            self.contrastive_2 = Contrastive(128, latent_dim, (128, 16, 1))
-
-        # up
-        self.decoder_1 = nn.Sequential(
-            nn.Upsample(scale_factor=(2, 1)),
-            nn.Conv2d(256, 128, 1, 1, 0),
-            nn.BatchNorm2d(128),
+        self.neck = nn.Sequential(
+            nn.Conv2d(256, 512, 3, 2, 1),
+            nn.BatchNorm2d(512),
             nn.Mish(inplace=True),
-        )
-        self.decoder_2 = nn.Sequential(
-            nn.Upsample(scale_factor=(2, 1)),
-            nn.Conv2d(128, 64, 1, 1, 0),
-            nn.BatchNorm2d(64),
-            nn.Mish(inplace=True),
-        
-            nn.Conv2d(64, 64, 1, 1, 0),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(512, 1024, 3, 2, 1),
+            nn.BatchNorm2d(1024),
             nn.Mish(inplace=True),
         )
 
-        
-        self.output_timestamp = nn.Conv2d(64, 1, (1, 1), (1, 1), (0, 0))
-        self.output_cls = nn.Sequential(
-            nn.Flatten(start_dim=1),
-            # ClassifierHead(64*32)  
-            ClassifierWithContrastiveHead(64*32, latent_dim=1024)
+        self.ct_1 = nn.Sequential(
+            nn.Linear(1024*2*5, 1024, bias=False),
+            nn.Dropout(0.5),
+            nn.BatchNorm1d(1024),
+            nn.Mish(inplace=True),
+        )
+        self.ct_2 = nn.Sequential(
+            nn.Linear(1024, 1024, bias=False),
+            nn.Dropout(0.5),
+            nn.BatchNorm1d(1024),
+            nn.Mish(inplace=True),
+        )
+        self.ct_3 = nn.Sequential(
+            nn.Linear(1024, 1024, bias=False),
+            nn.Dropout(0.5),
+            nn.BatchNorm1d(1024),
+            nn.Mish(inplace=True),
+        )
+        self.ct_4 = nn.Sequential(
+            nn.Linear(1024, 1024, bias=False),
+            nn.Dropout(0.5),
+            nn.BatchNorm1d(1024),
+            nn.Mish(inplace=True),
         )
 
-        self.combine_layer = nn.Sequential(
-            nn.AdaptiveAvgPool2d((8, 1)),
-            nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0),
-            nn.BatchNorm2d(256),
-            nn.Mish(inplace=True)
+        self.head = nn.Sequential(
+            nn.Linear(1024, 512, bias=False),
+            nn.Dropout(0.5),
+            nn.BatchNorm1d(512),
+            nn.Mish(inplace=True),
+            nn.Linear(512, 1, bias=False),
         )
+        self.use_ct = True
 
-        self.combine_type = 'sum'
-
-        self.classifier_1 = ClassifierHead(512)
-        self.classifier_2 = ClassifierHead(512)
-
-    def forward(self, x):
+    def forward(self, x, mask_missing):
 
         # data normalization
         N, C, T, V, M = x.size()
@@ -562,37 +558,28 @@ class Model(nn.Module):
         x = x.permute(0, 1, 3, 4, 2).contiguous()
         x = x.view(N * M, C, T, V)
 
+        mask = ~mask_missing.view(N * M, C, T, V)
+
         # forwad
         for gcn, importance in zip(self.st_gcn_networks, self.edge_importance):
             x, _ = gcn(x, self.A * importance)
 
-        # global pooling
-        pool = self.pool(x)
+        # neck
+        x_neck = self.neck(x)
+        # flatten
+        x_flat = x_neck.flatten(1)
 
-        if self.use_ct:
-            # get latent 
-            feat_1, latent_1 = self.contrastive_1(pool)
-            combine_feat_1 = feat_1 + pool
+        ct_1 = self.ct_1(x_flat)
 
-            # prediction
-            dec_1 = self.decoder_1(combine_feat_1)
-            feat_2, latent_2 = self.contrastive_2(dec_1)
-            combine_feat_2 = feat_2 + dec_1
+        ct_2 = self.ct_2(ct_1)
+        ct_3 = self.ct_3(ct_2)
+        ct_4 = self.ct_4(ct_3)
 
-            dec_2 = self.decoder_2(combine_feat_2) # torch.Size([64, 64, 32, 1])
+        out_cls = self.head(ct_4)
 
-            out_ts = self.output_timestamp(dec_2)
-            out_cls, out_latent = self.output_cls(dec_2)
 
-            ct_cls_1 = self.classifier_1(latent_1)
-            ct_cls_2 = self.classifier_2(latent_2)
+        return out_cls, out_cls, [ct_1, ct_2, ct_3, ct_4], [ct_1, ct_2]
 
-            return out_ts, out_cls, [latent_1, latent_2, out_latent], [ct_cls_1, ct_cls_2]
-        else:
-            dec_1 = self.decoder_1(pool)
-            dec_2 = self.decoder_2(dec_1)
-            out = self.output_timestamp(dec_2)
-            return out
 
 class ClassifierHead(nn.Module):
     def __init__(self, in_chan):

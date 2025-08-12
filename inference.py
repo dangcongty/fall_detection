@@ -1,6 +1,7 @@
 import os
 import subprocess
 import time
+from glob import glob
 
 import cv2
 import numpy as np
@@ -10,6 +11,7 @@ import torch.nn as nn
 from pyinstrument import Profiler
 
 from models.st_gcn import Model
+from tools.skeleton_extractor import MultipleSkeletonExtractor
 from ultralytics import YOLO
 
 
@@ -115,14 +117,62 @@ class Inference:
         print(f"[MEMORY] used {after - before:.2f} MB")
         cap.release()
         result_vid.release()
+        
+    def infer_images(self, paths):
+        extractor = MultipleSkeletonExtractor('weights/yolo11x-pose.pt')
+        frame = cv2.imread(paths[0])
+        frame_height, frame_width = frame.shape[:2]
+        sequence_skels = np.zeros((self.sequence_length, 17, 2))
+        fps = 15
+        result_vid = cv2.VideoWriter("output.avi", cv2.VideoWriter_fourcc(*"MP4V"), fps, (frame_width, frame_height))
+        c = 0
+        data = {
+                'video_path': paths[0],
+                'skeletons_norm': [],
+                'skeletons': []
+            }
+        for path in paths:
+            
+            frame = cv2.imread(path)
+            skeletons, skeletons_norm, data = extractor.extract_skeleton(path, data, c, 'vis')
+
+            if c < self.sequence_length:
+                sequence_skels[c] = skeletons_norm
+            else:
+                sequence_skels[:-1] = sequence_skels[1:]
+                sequence_skels[-1] = skeletons_norm
+
+            if c >= self.sequence_length-1:
+                input_sequence_skels = torch.from_numpy(sequence_skels).permute(2, 0, 1).unsqueeze(0).unsqueeze(-1).to(self.device).to(torch.float)
+                predict = self.fall_model(input_sequence_skels).squeeze()
+                pred_timestamp = predict > self.threshold
+
+                gt = '-'
+                if pred_timestamp[:-5].sum() > 3:
+                    frame = cv2.putText(frame, f'fall/{gt}', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                else:
+                    frame = cv2.putText(frame, f'nofall/{gt}', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+
+            for pt in skeletons:
+                frame = cv2.circle(frame, pt, 3, (0, 255, 0), -1)
+            result_vid.write(frame)
+                
+            
+            c += 1
+            print(f'{c}/{len(paths)}')
+
 
 
 before_gpu = get_gpu_memory()
-inferencer = Inference(model_path='checkpoints/urfall/model_epoch_945_f1.pth',
+inferencer = Inference(model_path='/media/hoangtv/0f9d3910-0ff9-406c-92e1-c2c8170ca6f4/Ty/checkpoints/ver44/model_epoch_260_f1.pth',
                        device='cuda:1',
                        sequence_length=32,
                        threshold=0.2)
-inferencer(video_path='datasets/ur_fall/dataset/adl-10-cam0.mp4')
+# inferencer(video_path='datasets/ur_fall/dataset/adl-10-cam0.mp4')
+
+img_paths = sorted(glob(f'datasets/UPfall/Subject1Activity1Trial3/*.png'), key=lambda x: float(x.split('/')[-1].split('_')[-1][:-4]) + float(x.split('/')[-1].split('_')[-2])*60 + float(x.split('/')[-1].split('_')[0].split('T')[-1])*60*60)
+
+inferencer.infer_images(img_paths)
 
 after_gpu = get_gpu_memory()
 print(f"[MEMORY] used {after_gpu - before_gpu:.2f} MB")
