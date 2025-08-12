@@ -11,7 +11,7 @@ import torch.nn as nn
 from pyinstrument import Profiler
 
 from models.st_gcn import Model
-from tools.extract_skeleton import MultipleSkeletonExtractor
+from tools.skeleton_extractor import MultipleSkeletonExtractor
 from ultralytics import YOLO
 
 

@@ -11,3 +11,9 @@ weights/
 paper_assets/
 
 *.pt
+
+vis/
+olds/
+
+__pycache__/
+.vscode/

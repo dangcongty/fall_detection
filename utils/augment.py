@@ -6,43 +6,43 @@ import cv2
 import numpy as np
 
 
-def add_noise_keypoints(squence_kpt, noise_level=0.01):
+def add_noise_keypoints(sequence_kpt, noise_level=0.01):
     if np.random.rand() > 0.5:
-        return squence_kpt
-    noise = np.random.uniform(-noise_level, noise_level, squence_kpt.shape)
-    noisy_keypoints = squence_kpt + noise
-    return noisy_keypoints
+        return sequence_kpt, False
+    noise = np.random.uniform(-noise_level, noise_level, sequence_kpt.shape)
+    noisy_keypoints = sequence_kpt + noise
+    return noisy_keypoints, True
 
-def flip_lr(squence_kpt, norm = True, img_size = None):
+def flip_lr(sequence_kpt, norm = True, img_size = None):
     if np.random.rand() > 0.5:
-        return squence_kpt
+        return sequence_kpt, False
     if norm:
-        squence_kpt[:, 0] = 1 - squence_kpt[:, 0]
+        sequence_kpt[..., 0] = 1 - sequence_kpt[..., 0]
     else:
-        squence_kpt[:, 0] = img_size - squence_kpt[:, 0]
-    return squence_kpt
+        sequence_kpt[:, 0] = img_size - sequence_kpt[:, 0]
+    return sequence_kpt, True
 
-def scale(squence_kpt, factor):
+def scale(sequence_kpt, factor):
     if np.random.rand() > 0.5:
-        return squence_kpt
-    squence_kpt= squence_kpt*factor
-    squence_kpt[squence_kpt > 1] = -1
-    return squence_kpt
+        return sequence_kpt, False
+    sequence_kpt= sequence_kpt*factor
+    sequence_kpt[sequence_kpt > 1] = -1
+    return sequence_kpt, True
 
-def translate(squence_kpt, factor):
+def translate(sequence_kpt, factor):
     if np.random.rand() > 0.5:
-        return squence_kpt
+        return sequence_kpt, False
     if np.sign(factor) == 1:
         factor = abs(factor)
-        squence_kpt[:, 0] = squence_kpt[:, 0] - factor
-        squence_kpt[squence_kpt < 0] = -1
+        sequence_kpt[..., 0] = sequence_kpt[..., 0] - factor
+        sequence_kpt[sequence_kpt < 0] = -1
 
     else:
         factor = abs(factor)
-        squence_kpt[:, 0] = squence_kpt[:, 0] + factor
-        squence_kpt[squence_kpt > 1] = -1
+        sequence_kpt[..., 0] = sequence_kpt[..., 0] + factor
+        sequence_kpt[sequence_kpt > 1] = -1
 
-    return squence_kpt
+    return sequence_kpt, True
 
 
 if __name__ == '__main__':
