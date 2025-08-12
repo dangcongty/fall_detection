@@ -1,5 +1,3 @@
-## How to use
-* 1. dataset: frame_extractor => tracking_kalman => make_sequence
 
 ## [UPDATE 13/07/2025]
 * Thêm bộ classifier sau contrastive module
